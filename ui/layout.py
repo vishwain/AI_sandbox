@@ -1,122 +1,79 @@
 import streamlit as st
-import core.session as session
+
 from core.llm_client import get_available_models
 
 
-def build_main_layout():
-    '''
-    Build the main layout of the app.
-    '''
-    add_chat_input()
-    add_side_bar()
-    add_model_selection_dropdown()
+def render_sidebar(sessions, active_id):
+    """Render the left sidebar: new-chat button, conversation list, sampling sliders.
 
-
-def add_chat_input():
-    '''
-    Add a chat input box to the main layout.
-    '''
-    prompt = st.chat_input("Ask AI")
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            from core.llm_client import get_inference_client
-            client = get_inference_client()
-            stream = client.chat.completions.create(
-                model=st.session_state["hf_model"],
-                messages=[
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages
-                ],
-            )
-
-
-def add_side_bar():
-    '''
-    Add a sidebar on the left to the app.
-    Consists of list of user's previous conversations and a button(+) to start a new conversation.
-    On clicking the button, callback function `add_new_conversation_callback` is triggered.
-    '''
+    Returns "new_chat", the session_id switched to, or None.
+    """
+    action = None
     with st.sidebar:
         st.header("Conversations")
 
-        if "conversations" not in st.session_state:
-            st.session_state.conversations = []
+        if st.button("+ New Chat", use_container_width=True):
+            action = "new_chat"
 
-        # Render the list of previous conversations
-        for idx, conv in enumerate(st.session_state.conversations):
-            title = conv.get("title", f"Chat Session {idx + 1}")
-            st.button(title, key=f"conversation_{idx}", on_click=activate_conversation, args=(idx,))
+        st.divider()
 
-        # Button to start a new conversation
-        st.button(
-            "+",
-            key="new_conversation_button",
-            on_click=add_new_conversation_callback,
-            use_container_width=True,
+        for session_id, chat_session in reversed(list(sessions.items())):
+            label = chat_session.title
+            if session_id == active_id:
+                label = f"\u27a4 {label}"
+            if st.button(label, key=f"conversation_{session_id}", use_container_width=True):
+                action = session_id
+
+        st.divider()
+        st.header("Sampling")
+        active_session = sessions[active_id]
+        active_session.temperature = st.slider(
+            "Temperature", 0.0, 1.5, active_session.temperature, 0.05, key=f"temp_{active_id}"
+        )
+        active_session.top_p = st.slider(
+            "Top-p", 0.0, 1.0, active_session.top_p, 0.05, key=f"top_p_{active_id}"
         )
 
-
-def add_new_conversation_callback():
-    '''
-    Create a new conversation and reset the session state.
-    '''
-    if "conversations" not in st.session_state:
-        st.session_state.conversations = []
-
-    # Save the current conversation before starting a new one
-    if "messages" in st.session_state and st.session_state.messages:
-        current_title = st.session_state.get(
-            "current_title",
-            f"Chat Session {len(st.session_state.conversations) + 1}",
-        )
-        st.session_state.conversations.append(
-            {"title": current_title, "messages": list(st.session_state.messages)}
-        )
-
-    # Reset session state for the new conversation
-    st.session_state.messages = []
-    st.session_state.current_title = f"Chat Session {len(st.session_state.conversations) + 1}"
-    st.session_state.current_session = session.Session()
+    return action
 
 
-def activate_conversation(conversation_index):
-    '''
-    Activate a conversation from the list of previous conversations.
-    '''
-    if "conversations" not in st.session_state:
-        st.session_state.conversations = []
+def render_model_selector(active_session):
+    """Render the model dropdown for the active conversation.
 
-    selected_conversation = st.session_state.conversations[conversation_index]
-    st.session_state.messages = selected_conversation.get("messages", [])
-    st.session_state.current_title = selected_conversation.get(
-        "title", f"Chat Session {conversation_index + 1}"
+    Reads/writes active_session.hf_model (a friendly key from
+    get_available_models()), so each conversation keeps its own model choice.
+    Returns the resolved Hugging Face model id to use for the next request.
+    """
+    model_options = get_available_models()
+    keys = list(model_options.keys())
+
+    if active_session.hf_model not in keys:
+        active_session.hf_model = keys[0]
+
+    selected = st.selectbox(
+        "Model",
+        options=keys,
+        index=keys.index(active_session.hf_model),
+        key=f"model_{active_session.session_id}",
     )
-    st.rerun()
+    active_session.hf_model = selected
+    return model_options[selected]
 
 
-def add_model_selection_dropdown():
-    '''
-    Add a dropdown to the sidebar for model selection. Will be populated with available models from the .env file.
-    If only one conversation is available, default model (Qwen 3) will be selected. For multiple conversations, the model used in the last conversation will be selected.
-    '''
-    with st.sidebar:
-        st.header("Model Selection")
-        model_options = get_available_models()
-        selected_model = st.selectbox(
-            "Select a model:",
-            options=list(model_options.keys()),
-            index=list(model_options.keys()).index(st.session_state.get("hf_model", "deepseekR1")),
-            key="hf_model_dropdown",
-            on_change=model_selection_callback,
-        )
+def render_chat_history(messages):
+    for message in messages:
+        if message["role"] == "system":
+            continue
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if message.get("reasoning"):
+                render_thinking_expander(message["reasoning"])
 
-def model_selection_callback():
-    '''
-    Callback function to handle model selection from the dropdown.
-    '''
-    selected_model = st.session_state.get("hf_model", "deepseek-ai/DeepSeek-R1:novita")
-    st.session_state.hf_model = selected_model
+
+def render_chat_input():
+    return st.chat_input("Ask AI")
+
+
+def render_thinking_expander(reasoning_text):
+    with st.expander("Thinking", expanded=False):
+        st.markdown(reasoning_text)

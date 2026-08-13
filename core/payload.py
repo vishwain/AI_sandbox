@@ -1,24 +1,78 @@
-# We will design this using the Builder Pattern. The class will be responsible for taking raw strings, tool data, and system instructions, and assembling them into the exact JSON schema the API demands.
+class PayloadBuilder:
+    """Builder Pattern: assembles the exact JSON payload the HF InferenceClient expects."""
 
-# Class: PayloadBuilder
-# Members:
-# model (String): The LLM identifier (e.g., "deepseek-ai/DeepSeek-R1").
-# messages (List of Dicts): The running list of formatted message payloads.
-# tools (List of Dicts): The JSON schema of available tools the model can use.
-# temperature / top_p (Floats): Sampling parameters to control determinism.
-# Functions (Payload Operations):
-# __init__(self, model, tools=None): Initializes the builder with the target model and an optional list of available tool schemas.
-# add_system_prompt(self, instructions): Appends the {"role": "system", "content": instructions} dictionary. This must always be at index 0.
-# add_user_message(self, prompt): Appends the standard {"role": "user", "content": prompt}.
-# add_assistant_message(self, content, tool_calls=None): Appends the assistant's response. If the model decided to call a tool, this function must append the tool_calls array exactly as the model provided it, including the unique id, function.name, and function.arguments.
-# add_tool_result(self, tool_call_id, function_name, result_content): This is critical for agentic loops. When your Python code finishes running a tool, you must send the result back to the LLM attached to the exact tool_call_id so the model knows which action was completed. It appends {"role": "tool", "tool_call_id": tool_call_id, "name": function_name, "content": result_content}.
-# build(self): The final compilation step. It returns the fully structured dictionary (containing model, messages, tools, and sampling parameters) ready to be passed directly as **kwargs to the Hugging Face InferenceClient.
-# truncate_context(self, max_tokens): (Helper Operation) A defensive function that checks the estimated token length of the messages array and removes older conversation turns (while preserving the system prompt and recent tool results) to prevent the API from throwing a context-window limit error.
-# How it connects to your workflow
-# Instead of your orchestrator (agent.py) manually building dictionaries, the flow becomes:
+    def __init__(self, model, tools=None, temperature=0.7, top_p=0.95):
+        self.model = model
+        self.tools = tools or []
+        self.temperature = temperature
+        self.top_p = top_p
+        self.messages = []
 
-# agent.py pulls history from session.py.
-# agent.py instantiates PayloadBuilder.
-# agent.py iterates through the history, using the builder's add_* methods.
-# agent.py calls builder.build() and hands that exact dictionary to core.llm_client.
+    def add_system_prompt(self, instructions):
+        """Insert the system prompt at index 0 (it must always lead the message list)."""
+        self.messages.insert(0, {"role": "system", "content": instructions})
+        return self
 
+    def add_user_message(self, prompt):
+        self.messages.append({"role": "user", "content": prompt})
+        return self
+
+    def add_assistant_message(self, content, tool_calls=None):
+        message = {"role": "assistant", "content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        self.messages.append(message)
+        return self
+
+    def add_tool_result(self, tool_call_id, function_name, result_content):
+        """Attach a tool's output to the exact tool_call_id the model requested."""
+        self.messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": function_name,
+                "content": result_content,
+            }
+        )
+        return self
+
+    def truncate_context(self, max_tokens):
+        """Drop oldest non-system turns until the estimated token count fits.
+
+        Keeps the system prompt (if present at index 0) and as many of the
+        most recent turns as fit within max_tokens (estimated as len(text) // 4).
+        """
+        def estimate(msg):
+            return max(len(str(msg.get("content", ""))) // 4, 1)
+
+        if not self.messages:
+            return self
+
+        has_system = self.messages[0].get("role") == "system"
+        system_msg = [self.messages[0]] if has_system else []
+        rest = self.messages[1:] if has_system else self.messages[:]
+
+        kept = []
+        total = sum(estimate(m) for m in system_msg)
+        for msg in reversed(rest):
+            cost = estimate(msg)
+            if total + cost > max_tokens and kept:
+                break
+            kept.append(msg)
+            total += cost
+        kept.reverse()
+
+        self.messages = system_msg + kept
+        return self
+
+    def build(self):
+        """Return the fully structured dict, ready to pass as **kwargs to the InferenceClient."""
+        payload = {
+            "model": self.model,
+            "messages": self.messages,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+        }
+        if self.tools:
+            payload["tools"] = self.tools
+        return payload

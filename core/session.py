@@ -1,57 +1,32 @@
-import os
+import uuid
 
-class Session:
-    def __init__(self, inference_client=None, model_name=None, api_key=None):
-        self._inference_client = inference_client
-        self._model_name = model_name
-        self._api_key = api_key
-        self._title = "Chat Session 1"
 
-    @property
-    def inference_client(self):
-        return self._inference_client
+class ChatSession:
+    """A single chat thread: its own message history, model, and sampling params."""
 
-    @inference_client.setter
-    def set_inference_client(self, inference_client):
-        self._inference_client = inference_client
+    def __init__(self, system_prompt, hf_model, temperature=0.7, top_p=0.95):
+        self.session_id = uuid.uuid4().hex
+        self.title = "New Chat"
+        self.system_prompt = system_prompt
+        self.hf_model = hf_model
+        self.temperature = temperature
+        self.top_p = top_p
+        self.messages = [{"role": "system", "content": system_prompt}]
 
-    @inference_client.deleter
-    def delete_inference_client(self):
-        del self._inference_client
+    def add_message(self, role, content, reasoning=None):
+        """Append a message to the history. Optionally attach a reasoning trace."""
+        message = {"role": role, "content": content}
+        if reasoning:
+            message["reasoning"] = reasoning
+        self.messages.append(message)
 
-    @property
-    def model_name(self):
-        return self._model_name
+    def get_history(self):
+        """Return the full message list (including the system prompt) for the LLM payload."""
+        return self.messages
 
-    @model_name.setter
-    def set_model_name(self, model_name):
-        self._model_name = model_name
-
-    @model_name.deleter
-    def delete_model_name(self):
-        del self._model_name
-
-    @property
-    def api_key(self):
-        return self._api_key
-
-    @api_key.setter
-    def set_api_key(self, api_key):
-        self._api_key = api_key
-
-    @api_key.deleter
-    def delete_api_key(self):
-        del self._api_key
-
-    @property
-    def title(self):
-        return self._title
-
-    @title.setter
-    def set_title(self, title):
-        self._title = title
-
-    @title.deleter
-    def delete_title(self):
-        del self._title
-
+    def maybe_set_title_from(self, text):
+        """Derive the sidebar title from the first user message, once."""
+        if self.title != "New Chat":
+            return
+        stripped = text.strip()
+        self.title = stripped[:40] + ("..." if len(stripped) > 40 else "")
