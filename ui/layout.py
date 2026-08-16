@@ -3,8 +3,16 @@ import streamlit as st
 from core.llm_client import get_available_models
 
 
+def render_agent_selector():
+    """Render the sidebar radio choosing which agent a new chat will use.
+
+    Only affects chats created afterwards, not the active conversation.
+    """
+    return st.radio("New chat agent", ["General Chat", "Web Research"], horizontal=True)
+
+
 def render_sidebar(sessions, active_id):
-    """Render the left sidebar: new-chat button, conversation list, sampling sliders.
+    """Render the left sidebar: agent picker, new-chat button, conversation list, sampling sliders.
 
     Returns "new_chat", the session_id switched to, or None.
     """
@@ -12,10 +20,14 @@ def render_sidebar(sessions, active_id):
     with st.sidebar:
         st.header("Conversations")
 
-        if st.button("+ New Chat", use_container_width=True):
+        agent_mode = render_agent_selector()
+
+        if st.button("+ Create New Chat", use_container_width=True):
             action = "new_chat"
+            st.session_state["pending_agent_mode"] = agent_mode
 
         st.divider()
+        st.subheader("Conversations")
 
         for session_id, chat_session in reversed(list(sessions.items())):
             label = chat_session.title
@@ -61,13 +73,35 @@ def render_model_selector(active_session):
 
 
 def render_chat_history(messages):
+    """Replay history, pairing each assistant tool_calls entry with its tool result."""
+    tool_results = {m["tool_call_id"]: m["content"] for m in messages if m["role"] == "tool"}
+
     for message in messages:
-        if message["role"] == "system":
+        role = message["role"]
+        if role in ("system", "tool"):
             continue
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+
+        if role == "assistant" and message.get("tool_calls"):
+            with st.chat_message("assistant"):
+                for tool_call in message["tool_calls"]:
+                    function = tool_call["function"]
+                    render_tool_call(
+                        function["name"], function["arguments"], tool_results.get(tool_call["id"])
+                    )
+            if not message.get("content"):
+                continue
+
+        with st.chat_message(role):
+            if message.get("content"):
+                st.markdown(message["content"])
             if message.get("reasoning"):
                 render_thinking_expander(message["reasoning"])
+
+
+def render_tool_call(name, arguments, result=None):
+    """Render a single tool invocation as a collapsed expander (call args + result)."""
+    with st.expander(f"\U0001f527 {name}({arguments})", expanded=False):
+        st.markdown(f"```\n{result}\n```" if result else "_Running..._")
 
 
 def render_chat_input():

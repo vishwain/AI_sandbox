@@ -1,4 +1,4 @@
 .env
 __pycache__/
-ai_sandbox_env/
+.venv/
 contextual_docs/

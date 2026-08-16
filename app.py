@@ -1,6 +1,7 @@
 import streamlit as st
 
-from core.agent_controller import run_chat_turn
+from agents import web_research_agent
+from core.agent_controller import run_agentic_loop, run_chat_turn
 from core.llm_client import get_available_models, get_inference_client
 from core.session import ChatSession
 from ui.layout import (
@@ -9,6 +10,7 @@ from ui.layout import (
     render_model_selector,
     render_sidebar,
     render_thinking_expander,
+    render_tool_call,
 )
 from utils.parser import iter_stream_text
 
@@ -17,7 +19,15 @@ SYSTEM_PROMPT = "You are a helpful assistant."
 
 def _create_new_session():
     default_model = next(iter(get_available_models()))
-    new_session = ChatSession(system_prompt=SYSTEM_PROMPT, hf_model=default_model)
+    agent_mode = st.session_state.pop("pending_agent_mode", "General Chat")
+    if agent_mode == "Web Research":
+        new_session = ChatSession(
+            system_prompt=web_research_agent.SYSTEM_PROMPT,
+            hf_model=default_model,
+            tools=web_research_agent.TOOLS,
+        )
+    else:
+        new_session = ChatSession(system_prompt=SYSTEM_PROMPT, hf_model=default_model)
     st.session_state.sessions[new_session.session_id] = new_session
     st.session_state.active_id = new_session.session_id
 
@@ -69,7 +79,16 @@ def main():
             return
 
         with st.chat_message("assistant"):
-            stream = run_chat_turn(active_session, client, model_id)
+            if active_session.tools:
+                stream = run_agentic_loop(
+                    active_session,
+                    client,
+                    model_id,
+                    active_session.tools,
+                    on_tool_call=render_tool_call,
+                )
+            else:
+                stream = run_chat_turn(active_session, client, model_id)
             reasoning_sink = []
             response_text = st.write_stream(iter_stream_text(stream, reasoning_sink))
             reasoning_text = "".join(reasoning_sink)
